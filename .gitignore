@@ -1,0 +1,95 @@
+# Environment files
+.env
+.env.local
+.env.production
+.env.staging
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Virtual environments
+.venv/
+venv/
+ENV/
+env/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Test outputs
+test_*.csv
+test_*.xlsx
+*_test_output.*
+
+# Backup files
+*_backup_*.xlsx
+inputs_backup_*.xlsx
+
+# Temporary files
+temp_*.py
+~$*.xlsx
+*.tmp
+
+# Test files
+test_*.py
+
+# Fix files
+fix*.py
+
+# Backup files
+*.backup
+.env.backup
+
+# Data files (optional - uncomment if you want to exclude data)
+# data/
+# *.csv
+inputs.xlsx
+inputs_backup_*.xlsx
+
+# Output files
+output/
+results/
+
+# IDE and editor files
+.claude/
+.cursor/
+
+# Summary files
+*_SUMMARY.md 

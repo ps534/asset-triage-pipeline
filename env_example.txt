@@ -1,0 +1,34 @@
+# LiteLLM Gateway Configuration
+LITELLM_GATEWAY_URL=https://llmgateway.experiment.trialspark.com/
+
+# Model Configuration (can be overridden)
+TIMELINE_MODEL=claude-sonnet-4-20250514     # Development timeline research
+PROMPT_A_MODEL=o3                           # Repurposing prompt
+PROMPT_C_MODEL=claude-sonnet-4-20250514     # Asset screening prompt  
+MOA_LOOKUP_MODEL=claude-sonnet-4-20250514   # Mechanism of action lookup
+PRIMARY_INDICATION_MODEL=claude-sonnet-4-20250514  # Primary indication lookup
+
+# API Access Configuration
+# Use Anthropic API directly for Claude models (enables better web search)
+USE_DIRECT_ANTHROPIC=true
+ANTHROPIC_API_KEY=your-anthropic-key-here
+
+# Authentication for Gateway
+OPENAI_API_KEY=your-openai-key-here
+
+# Web Search Configuration
+WEB_SEARCH_CONTEXT_SIZE=medium              # Options: low, medium, high
+# WEB_SEARCH_USER_LOCATION=US
+
+# Prompt Caching Configuration
+ENABLE_PROMPT_CACHING=true                  # Enable prompt caching for cost reduction
+
+# Extended Reasoning Configuration
+O3_EFFORT=high                              # o3 effort level: low, medium, high
+CLAUDE_EXTENDED_THINKING=true               # Enable Claude's extended thinking mode
+
+# Available Models:
+# - o3 (OpenAI) - supports web search via LiteLLM
+# - gpt-4.1 (OpenAI) - supports web search via LiteLLM
+# - claude-opus-4-20250514 (Anthropic) - supports web search via direct API
+# - claude-sonnet-4-20250514 (Anthropic) - supports web search via direct API
