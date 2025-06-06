@@ -26,46 +26,20 @@ class PromptManager:
     def __init__(self):
         self.logger = logging.getLogger(__name__)
         
-        # Set environment variables to disable SSL verification globally
-        os.environ["HTTPX_SSL_VERIFY"] = "false"
-        os.environ["SSL_VERIFY"] = "false"
-        os.environ["CURL_CA_BUNDLE"] = ""
-        os.environ["REQUESTS_CA_BUNDLE"] = ""
-        os.environ["PYTHONHTTPSVERIFY"] = "0"
-        
-        # Globally disable SSL verification for LiteLLM
-        litellm.ssl_verify = False
-        litellm.verify_ssl = False
-        
-        # Additional SSL configuration for OpenAI and other HTTP clients
-        import ssl
-        ssl._create_default_https_context = ssl._create_unverified_context
-        
-        # Configure connection settings for better reliability
-        litellm.request_timeout = 300  # 5 minutes
-        litellm.max_retries = 3
-        
         # Configure LiteLLM for your gateway
-        gateway_url_raw = os.getenv("LITELLM_GATEWAY_URL", "https://llmgateway.experiment.trialspark.com/")
+        self.gateway_url = os.getenv("LITELLM_GATEWAY_URL", "https://llmgateway.experiment.trialspark.com/")
         
-        # Store gateway URL with trailing slash for our own HTTP calls
-        self.gateway_url = gateway_url_raw if gateway_url_raw.endswith('/') else gateway_url_raw + '/'
-        
-        # For LiteLLM, remove trailing slash to prevent double slashes
-        # LiteLLM adds its own path separators (/v1/messages), so we need clean base URL
-        litellm_base_url = gateway_url_raw.rstrip('/')
+        # Ensure gateway URL ends with / for proper path construction
+        if not self.gateway_url.endswith('/'):
+            self.gateway_url += '/'
         
         # Set the base URL for all LiteLLM calls
-        litellm.api_base = litellm_base_url
-        
-        self.logger.info(f"Gateway URL for direct HTTP: {self.gateway_url}")
-        self.logger.info(f"LiteLLM api_base: {litellm_base_url}")
-        self.logger.info("SSL verification disabled for LiteLLM")
+        litellm.api_base = self.gateway_url
         
         # Initialize Anthropic client for direct API access (if needed)
         anthropic_api_key = os.getenv("ANTHROPIC_API_KEY")
         if anthropic_api_key:
-            self.anthropic_client = anthropic.AsyncAnthropic(api_key=anthropic_api_key, http_client=httpx.AsyncClient(verify=False))
+            self.anthropic_client = anthropic.AsyncAnthropic(api_key=anthropic_api_key)
             self.logger.info("Anthropic direct client initialized")
         else:
             self.anthropic_client = None
@@ -74,7 +48,6 @@ class PromptManager:
         # Model configuration for each prompt
         # Can be overridden via environment variables
         self.models = {
-            "timeline": os.getenv("TIMELINE_MODEL", "claude-sonnet-4-20250514"),  # Development timeline research
             "prompt_a": os.getenv("PROMPT_A_MODEL", "o3"),  # Repurposing
             "prompt_c": os.getenv("PROMPT_C_MODEL", "claude-sonnet-4-20250514"),  # Asset screening
             "moa_lookup": os.getenv("MOA_LOOKUP_MODEL", "claude-sonnet-4-20250514"),  # MOA lookup
@@ -82,9 +55,9 @@ class PromptManager:
         }
         
         # Determine which models should use direct API vs gateway
-        # Set USE_DIRECT_ANTHROPIC=false to disable direct Anthropic API calls
         self.use_direct_anthropic = os.getenv("USE_DIRECT_ANTHROPIC", "true").lower() == "true"
         
+        self.logger.info(f"Using LiteLLM gateway at: {self.gateway_url}")
         self.logger.info(f"Model configuration: Prompt A={self.models['prompt_a']}, Prompt C={self.models['prompt_c']}")
         self.logger.info(f"Direct Anthropic API: {'Enabled' if self.use_direct_anthropic and self.anthropic_client else 'Disabled'}")
         
@@ -112,33 +85,12 @@ class PromptManager:
         )
         self.logger.info("Batch manager initialized")
         
-    async def prompt_timeline_research(self, asset_name: str, company_name: str) -> str:
-        """
-        Timeline Research: Create a brief development timeline for the asset using web search.
-        Returns a formatted timeline string.
-        """
-        prompt = self._build_timeline_prompt(asset_name, company_name)
-        
-        try:
-            response = await self._call_llm_with_retry(
-                model=self.models["timeline"],
-                prompt=prompt,
-                use_web_search=True
-            )
-            
-            self.logger.debug(f"Generated timeline for {asset_name}")
-            return response.strip()
-            
-        except Exception as e:
-            self.logger.error(f"Timeline research failed for {asset_name}: {str(e)}")
-            return f"Timeline research unavailable for {asset_name}: {str(e)}"
-        
-    async def prompt_a_repurposing(self, asset_name: str, company_name: str, mechanism_of_action: Optional[str] = None, primary_indication: Optional[str] = None, timeline: Optional[str] = None) -> List[Dict[str, Any]]:
+    async def prompt_a_repurposing(self, asset_name: str, company_name: str, mechanism_of_action: Optional[str] = None, primary_indication: Optional[str] = None) -> List[Dict[str, Any]]:
         """
         Prompt A: Generate up to 5 plausible repurposing indications.
         Returns list of indications with plausibility ratings.
         """
-        prompt = self._build_repurposing_prompt(asset_name, company_name, mechanism_of_action, primary_indication, timeline)
+        prompt = self._build_repurposing_prompt(asset_name, company_name, mechanism_of_action, primary_indication)
         
         try:
             response = await self._call_llm_with_retry(
@@ -172,70 +124,19 @@ class PromptManager:
             self.logger.error(f"Prompt A failed for {asset_name}: {str(e)}")
             raise LLMError(f"Repurposing prompt failed: {str(e)}")
     
-    def _build_timeline_prompt(self, asset_name: str, company_name: str) -> str:
-        """Build the development timeline research prompt."""
-        return f"""You are a pharmaceutical research analyst specializing in drug development history. Use web search to research and create a brief timeline of the development history for this clinical-stage asset.
-
-Asset: {asset_name}
-Company: {company_name}
-
-SEARCH STRATEGY:
-1. Search for "{asset_name} {company_name} development history"
-2. Search for "{asset_name} {company_name} clinical trials"
-3. Search for "{asset_name} discovery development"
-4. Search for "{company_name} {asset_name} pipeline timeline"
-5. Search for "{asset_name} FDA IND licensing"
-6. Search for "{asset_name} {company_name} press releases"
-7. Search for "{company_name} investor presentations {asset_name}"
-
-Look for information from:
-- Company press releases and investor presentations
-- ClinicalTrials.gov database and trial registrations
-- SEC filings (10-K, 10-Q, 8-K) and annual reports
-- FDA communications and regulatory filings
-- PubMed/scientific literature and publications
-- Pharmaceutical industry databases
-- Biotech industry news sources (BioPharma Dive, FierceBiotech, etc.)
-- Patent filings and intellectual property databases
-- Conference presentations and abstracts
-
-Create a concise development timeline that includes:
-- Discovery/preclinical milestones (if available)
-- IND filing or regulatory submissions
-- Clinical trial initiations (Phase I, II, III)
-- Key partnership or licensing deals
-- FDA designations (Fast Track, Breakthrough, etc.)
-- Major clinical data readouts or publications
-- Regulatory submissions (NDA, BLA, etc.)
-- Any significant setbacks or delays
-
-Format your response as a clear, chronological timeline with approximate dates where available. Focus on factual information found through web search.
-
-Example format:
-2018: Discovery and early preclinical development at [Company]
-2020: IND filing with FDA for [indication]
-2021: Phase I trial initiated (NCT#...)
-2022: Phase I results published in [Journal]
-2023: Phase II trial started for [indication]
-2024: Received FDA Fast Track designation
-
-If limited information is available, focus on what can be verified through web search and note any gaps in the timeline."""
-
-    def _build_repurposing_prompt(self, asset_name: str, company_name: str, mechanism_of_action: Optional[str] = None, primary_indication: Optional[str] = None, timeline: Optional[str] = None) -> str:
+    def _build_repurposing_prompt(self, asset_name: str, company_name: str, mechanism_of_action: Optional[str] = None, primary_indication: Optional[str] = None) -> str:
         """Build the repurposing enumeration prompt."""
         moa_context = f"\nMechanism of Action: {mechanism_of_action}" if mechanism_of_action else ""
         primary_context = f"\nPrimary Indication: {primary_indication}" if primary_indication else ""
-        timeline_context = f"\nDevelopment Timeline:\n{timeline}" if timeline else ""
         
-        return f"""You are an expert in drug repurposing and clinical pharmacology. Given a clinical-stage asset, identify up to 5 plausible repurposing indications beyond its primary indication.
+        return f\"\"\"You are an expert in drug repurposing and clinical pharmacology. Given a clinical-stage asset, identify up to 5 plausible repurposing indications beyond its primary indication.
 
 Asset: {asset_name}
-Company: {company_name}{primary_context}{moa_context}{timeline_context}
+Company: {company_name}{primary_context}{moa_context}
 
 For each repurposing indication, assess the plausibility based on:
 - Mechanism of action compatibility{" (considering the known MOA above)" if mechanism_of_action else ""}
 - Primary indication insights{" (considering how the mechanism might work in other diseases)" if primary_indication else ""}
-- Development timeline and stage{" (considering the development history above)" if timeline else ""}
 - Published research or clinical evidence
 - Similar successful repurposing cases
 - Biological pathway relevance
@@ -258,11 +159,11 @@ Guidelines:
 - Do not consider or recommend repurposing for oncology diseases, as this is not a focus of the company.
 - Make sure to consider rare diseases, particularly those that are not well-served by existing therapies.
 - Include only serious consideration-worthy repurposing opportunities
-- Avoid suggesting the same disease category as the primary indication unless it's a very different sub-condition"""
+- Avoid suggesting the same disease category as the primary indication unless it's a very different sub-condition\"\"\"
 
     def _build_primary_indication_prompt(self, asset_name: str, company_name: str) -> str:
         """Build the primary indication lookup prompt."""
-        return f"""You are a pharmaceutical research analyst. Use web search to find the primary medical indication for this clinical-stage asset.
+        return f\"\"\"You are a pharmaceutical research analyst. Use web search to find the primary medical indication for this clinical-stage asset.
 
 Asset: {asset_name}
 Company: {company_name}
@@ -295,11 +196,11 @@ Guidelines:
 - Use standard medical terminology
 - If multiple indications exist, choose the primary/lead indication
 - If truly unclear from web search, respond with "Unknown"
-- Do not guess - only report what you find from web research"""
+- Do not guess - only report what you find from web research\"\"\"
 
     def _build_mechanism_of_action_prompt(self, asset_name: str, company_name: str) -> str:
         """Build the mechanism of action lookup prompt."""
-        return f"""You are a pharmaceutical research analyst. Use web search to find the mechanism of action for this clinical-stage asset.
+        return f\"\"\"You are a pharmaceutical research analyst. Use web search to find the mechanism of action for this clinical-stage asset.
 
 Asset: {asset_name}
 Company: {company_name}
@@ -333,7 +234,7 @@ Guidelines:
 - Include target/pathway if known (e.g., "mTOR pathway inhibitor")
 - If multiple mechanisms, focus on the primary one
 - If truly unclear from web search, respond with "Unknown"
-- Do not guess - only report what you find from scientific sources"""
+- Do not guess - only report what you find from scientific sources\"\"\"
 
     async def prompt_mechanism_of_action_lookup(self, asset_name: str, company_name: str) -> str:
         """
@@ -407,7 +308,7 @@ Guidelines:
             self.logger.error(f"Primary indication lookup failed for {asset_name}: {str(e)}")
             raise LLMError(f"Primary indication lookup failed: {str(e)}")
 
-    async def prompt_c_asset_screen(self, asset_name: str, company_name: str, indication: str, unmet_need_score: str, is_repurposing: bool = False, mechanism_of_action: Optional[str] = None, timeline: Optional[str] = None) -> Dict[str, Any]:
+    async def prompt_c_asset_screen(self, asset_name: str, company_name: str, indication: str, unmet_need_score: str, is_repurposing: bool = False, mechanism_of_action: Optional[str] = None) -> Dict[str, Any]:
         """
         Prompt C: Screen asset-indication pair for pursue/not-pursue decision.
         Returns JSON with pursue boolean, fail_reasons, and confidence.
@@ -421,7 +322,7 @@ Guidelines:
         try:
             if supports_caching:
                 # Use messages format with caching for Claude models
-                messages = self._build_screening_prompt_messages(asset_name, company_name, indication, unmet_need_score, is_repurposing, mechanism_of_action, timeline)
+                messages = self._build_screening_prompt_messages(asset_name, company_name, indication, unmet_need_score, is_repurposing, mechanism_of_action)
                 response = await self._call_llm_with_retry(
                     model=model,
                     messages=messages,
@@ -429,7 +330,7 @@ Guidelines:
                 )
             else:
                 # Fall back to original prompt format for other models
-                prompt = self._build_screening_prompt(asset_name, company_name, indication, unmet_need_score, is_repurposing, mechanism_of_action, timeline)
+                prompt = self._build_screening_prompt(asset_name, company_name, indication, unmet_need_score, is_repurposing, mechanism_of_action)
                 response = await self._call_llm_with_retry(
                     model=model,
                     prompt=prompt,
@@ -532,7 +433,7 @@ Guidelines:
     
     def _get_screening_framework(self) -> str:
         """Get the cacheable scoring framework for asset screening."""
-        return """You are a business development analyst evaluating clinical-stage assets for potential acquisition or partnership. You will use web search to gather available information, but recognize that many valuable assets have limited public disclosures due to confidentiality or early development stage.
+        return \"\"\"You are a business development analyst evaluating clinical-stage assets for potential acquisition or partnership. You will use web search to gather available information, but recognize that many valuable assets have limited public disclosures due to confidentiality or early development stage.
 
 ## Key Principles:
 1. Limited public information does NOT automatically disqualify an asset - it may indicate a proprietary opportunity
@@ -570,7 +471,7 @@ When limited public information is available:
    - Early but promising asset
    - Opportunity for competitive advantage through early engagement
 
-IMPORTANT: Search for information about the asset, company, indication, and therapeutic area. Consider the development timeline and history when assessing development stage and probability of success. Base assessments on available data while recognizing that direct company engagement may reveal additional value.
+IMPORTANT: Search for information about the asset, company, indication, and therapeutic area. Base assessments on available data while recognizing that direct company engagement may reveal additional value.
 
 Return your response as JSON in this exact format:
 {{
@@ -608,13 +509,12 @@ Return your response as JSON in this exact format:
 
 Common fail reasons: "pre_clinical_only", "market_too_small", "overcrowded_space", "weak_differentiation", "regulatory_barriers", "poor_strategic_fit"
 
-Note: Recommend "pursue" for assets addressing high unmet needs, novel mechanisms, or strategic areas even with limited public data."""
+Note: Recommend "pursue" for assets addressing high unmet needs, novel mechanisms, or strategic areas even with limited public data.\"\"\"
     
-    def _build_screening_prompt_messages(self, asset_name: str, company_name: str, indication: str, unmet_need_score: str, is_repurposing: bool, mechanism_of_action: Optional[str] = None, timeline: Optional[str] = None) -> List[Dict[str, Any]]:
+    def _build_screening_prompt_messages(self, asset_name: str, company_name: str, indication: str, unmet_need_score: str, is_repurposing: bool, mechanism_of_action: Optional[str] = None) -> List[Dict[str, Any]]:
         """Build messages for the asset screening prompt with caching support."""
         repurposing_context = " (repurposing opportunity)" if is_repurposing else " (primary indication)"
         moa_context = f"\nMechanism of Action: {mechanism_of_action}" if mechanism_of_action else ""
-        timeline_context = f"\nDevelopment Timeline:\n{timeline}" if timeline else ""
         
         # Create cacheable system message with framework
         system_content = []
@@ -635,12 +535,12 @@ Note: Recommend "pursue" for assets addressing high unmet needs, novel mechanism
             ]
         
         # Variable user content (not cached)
-        user_content = f"""Asset: {asset_name}
+        user_content = f\"\"\"Asset: {asset_name}
 Company: {company_name}
 Indication: {indication}{repurposing_context}
-Unmet Need Score: {unmet_need_score}{moa_context}{timeline_context}
+Unmet Need Score: {unmet_need_score}{moa_context}
 
-Please analyze this asset-indication pair according to the scoring framework and return your assessment as JSON."""
+Please analyze this asset-indication pair according to the scoring framework and return your assessment as JSON.\"\"\"
 
         return [
             {
@@ -653,41 +553,36 @@ Please analyze this asset-indication pair according to the scoring framework and
             }
         ]
     
-    def _build_screening_prompt(self, asset_name: str, company_name: str, indication: str, unmet_need_score: str, is_repurposing: bool, mechanism_of_action: Optional[str] = None, timeline: Optional[str] = None) -> str:
+    def _build_screening_prompt(self, asset_name: str, company_name: str, indication: str, unmet_need_score: str, is_repurposing: bool, mechanism_of_action: Optional[str] = None) -> str:
         """Build the asset screening prompt (legacy format without caching)."""
         repurposing_context = " (repurposing opportunity)" if is_repurposing else " (primary indication)"
         moa_context = f"\nMechanism of Action: {mechanism_of_action}" if mechanism_of_action else ""
-        timeline_context = f"\nDevelopment Timeline:\n{timeline}" if timeline else ""
         
         framework = self._get_screening_framework()
         
-        return f"""{framework}
+        return f\"\"\"{framework}
 
 Asset: {asset_name}
 Company: {company_name}
 Indication: {indication}{repurposing_context}
-Unmet Need Score: {unmet_need_score}{moa_context}{timeline_context}
+Unmet Need Score: {unmet_need_score}{moa_context}
 
-Please analyze this asset-indication pair according to the scoring framework and return your assessment as JSON."""
+Please analyze this asset-indication pair according to the scoring framework and return your assessment as JSON.\"\"\"
 
     async def _call_llm_with_retry(self, model: str, prompt: str = None, use_web_search: bool = False, messages: List[Dict[str, Any]] = None) -> str:
         """Call LLM (via direct HTTP, LiteLLM gateway, or direct Anthropic API) with retry logic."""
         # Check if we should use direct Anthropic API
         if self.use_direct_anthropic and self.anthropic_client and "claude" in model.lower():
-            try:
-                if messages:
-                    return await self._call_anthropic_direct_messages(model, messages, use_web_search)
-                else:
-                    return await self._call_anthropic_direct(model, prompt, use_web_search)
-            except Exception as e:
-                self.logger.warning(f"Direct Anthropic call failed with error: {e}. Falling back to gateway.")
-
-        # For non-Claude models or when Anthropic fails, use direct HTTP gateway
-        # This avoids SSL certificate issues with LiteLLM
-        if messages:
-            return await self._call_gateway_direct_http_messages(model, messages, use_web_search)
+            if messages:
+                return await self._call_anthropic_direct_messages(model, messages, use_web_search)
+            else:
+                return await self._call_anthropic_direct(model, prompt, use_web_search)
         else:
-            return await self._call_gateway_direct_http(model, prompt, use_web_search)
+            # For OpenAI models, use LiteLLM gateway with proper web search support
+            if messages:
+                return await self._call_litellm_gateway_messages(model, messages, use_web_search)
+            else:
+                return await self._call_litellm_gateway(model, prompt, use_web_search)
     
     async def _call_anthropic_direct(self, model: str, prompt: str, use_web_search: bool = False) -> str:
         """Call Anthropic API directly with web search support."""
@@ -807,7 +702,7 @@ Please analyze this asset-indication pair according to the scoring framework and
                 
                 # Make the HTTP request
                 url = f"{self.gateway_url}chat/completions"
-                async with httpx.AsyncClient(timeout=120.0, verify=False) as client:
+                async with httpx.AsyncClient(timeout=120.0) as client:
                     response = await client.post(url, json=payload, headers=headers)
                     
                     if response.status_code == 200:
@@ -875,7 +770,7 @@ Please analyze this asset-indication pair according to the scoring framework and
                         kwargs["messages"] = messages
                 
                 # Call LiteLLM completion with explicit api_base
-                kwargs["api_base"] = litellm.api_base
+                kwargs["api_base"] = self.gateway_url
                 response = await litellm.acompletion(**kwargs, timeout=120)
                 
                 # Extract the response content
@@ -939,7 +834,7 @@ Please analyze this asset-indication pair according to the scoring framework and
                     messages[-1]["content"] += "\n\nIMPORTANT: Respond with valid JSON only. Do not include any text before or after the JSON."
                 
                 # Call LiteLLM completion with explicit api_base
-                kwargs["api_base"] = litellm.api_base
+                kwargs["api_base"] = self.gateway_url
                 response = await litellm.acompletion(**kwargs, timeout=120)
                 
                 # Extract the response content
@@ -1116,7 +1011,7 @@ Please analyze this asset-indication pair according to the scoring framework and
                 
                 # Make the HTTP request
                 url = f"{self.gateway_url}chat/completions"
-                async with httpx.AsyncClient(timeout=120.0, verify=False) as client:
+                async with httpx.AsyncClient(timeout=120.0) as client:
                     response = await client.post(url, json=payload, headers=headers)
                     
                     if response.status_code == 200:
@@ -1174,78 +1069,6 @@ Please analyze this asset-indication pair according to the scoring framework and
 
     # ================== BATCH PROCESSING METHODS ==================
     
-    async def prompt_timeline_research_batch(
-        self, 
-        assets: List[Dict[str, str]],
-        prefer_anthropic_batch: bool = False
-    ) -> Dict[str, str]:
-        """
-        Batch version of timeline research for multiple assets.
-        
-        Args:
-            assets: List of dicts with keys: asset_name, company_name
-            prefer_anthropic_batch: Whether to prefer Anthropic batch API when possible
-            
-        Returns:
-            Dict mapping asset keys to their development timelines
-        """
-        if not assets:
-            return {}
-            
-        self.logger.info(f"Processing batch timeline research for {len(assets)} assets")
-        
-        # Create batch requests
-        batch_requests = []
-        asset_keys = []
-        
-        for i, asset in enumerate(assets):
-            asset_name = asset["asset_name"]
-            company_name = asset["company_name"]
-            
-            asset_key = f"{asset_name}_{company_name}"
-            asset_keys.append(asset_key)
-            
-            prompt = self._build_timeline_prompt(asset_name, company_name)
-            
-            # Add web search instruction to the prompt for batch processing
-            web_search_prompt = prompt + "\n\nIMPORTANT: Use your web search capabilities to find current, up-to-date information about this topic. Search for recent clinical trials, company announcements, scientific publications, and regulatory filings."
-            
-            batch_request = BatchRequest(
-                custom_id=f"timeline_{i:04d}_{asset_key}",
-                model=self.models["timeline"],
-                messages=[{"role": "user", "content": web_search_prompt}],
-                max_tokens=2000,
-                temperature=0.0,
-                metadata={"asset_name": asset_name, "company_name": company_name, "type": "timeline"}
-            )
-            batch_requests.append(batch_request)
-        
-        # Process batch
-        try:
-            batch_responses = await self.batch_manager.process_batch(
-                batch_requests, 
-                prefer_anthropic_batch=prefer_anthropic_batch
-            )
-            
-            # Parse results
-            results = {}
-            for i, response in enumerate(batch_responses):
-                asset_key = asset_keys[i] if i < len(asset_keys) else f"unknown_{i}"
-                
-                if response.success and response.content:
-                    results[asset_key] = response.content.strip()
-                    self.logger.debug(f"Generated timeline for {asset_key}")
-                else:
-                    error_msg = f"Timeline research unavailable for {asset_key}: {response.error}"
-                    results[asset_key] = error_msg
-                    self.logger.error(f"Timeline research failed for {asset_key}: {response.error}")
-            
-            return results
-            
-        except Exception as e:
-            self.logger.error(f"Batch timeline research failed: {e}")
-            raise LLMError(f"Batch timeline research failed: {str(e)}")
-    
     async def prompt_a_repurposing_batch(
         self, 
         assets: List[Dict[str, Any]],
@@ -1279,7 +1102,7 @@ Please analyze this asset-indication pair according to the scoring framework and
             asset_key = f"{asset_name}_{company_name}"
             asset_keys.append(asset_key)
             
-            prompt = self._build_repurposing_prompt(asset_name, company_name, mechanism_of_action, primary_indication, asset.get("timeline"))
+            prompt = self._build_repurposing_prompt(asset_name, company_name, mechanism_of_action, primary_indication)
             
             batch_request = BatchRequest(
                 custom_id=f"repurposing_{i:04d}_{asset_key}",
@@ -1538,7 +1361,6 @@ Please analyze this asset-indication pair according to the scoring framework and
             unmet_need_score = req["unmet_need_score"]
             is_repurposing = req.get("is_repurposing", False)
             mechanism_of_action = req.get("mechanism_of_action")
-            timeline = req.get("timeline")
             
             request_key = f"{asset_name}_{company_name}_{indication}"
             request_keys.append(request_key)
@@ -1551,7 +1373,7 @@ Please analyze this asset-indication pair according to the scoring framework and
             
             if supports_caching:
                 messages = self._build_screening_prompt_messages(
-                    asset_name, company_name, indication, unmet_need_score, is_repurposing, mechanism_of_action, timeline
+                    asset_name, company_name, indication, unmet_need_score, is_repurposing, mechanism_of_action
                 )
                 batch_request = BatchRequest(
                     custom_id=f"screening_{i:04d}_{request_key}",
@@ -1568,7 +1390,7 @@ Please analyze this asset-indication pair according to the scoring framework and
                 )
             else:
                 prompt = self._build_screening_prompt(
-                    asset_name, company_name, indication, unmet_need_score, is_repurposing, mechanism_of_action, timeline
+                    asset_name, company_name, indication, unmet_need_score, is_repurposing, mechanism_of_action
                 )
                 batch_request = BatchRequest(
                     custom_id=f"screening_{i:04d}_{request_key}",
